@@ -31,4 +31,9 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("read M101 :", v1)
+	v2, err := client.ReadFloat64("M102")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("read M102 :%.2f \n", v2)
 }

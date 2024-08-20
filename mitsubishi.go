@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -386,6 +387,30 @@ func (client *MitsubishiClient) ReadUInt64(address string) (uint64, error) {
 	return value, nil
 }
 
+func (client *MitsubishiClient) ReadFloat32(address string) (float32, error) {
+	ret, err := client.Read(address, 4, false)
+	if err != nil {
+		return 0, err
+	}
+	if len(ret) < 4 {
+		return 0, errors.New("no data")
+	}
+	value := binary.LittleEndian.Uint32(ret)
+	return math.Float32frombits(value), nil
+}
+
+func (client *MitsubishiClient) ReadFloat64(address string) (float64, error) {
+	ret, err := client.Read(address, 8, false)
+	if err != nil {
+		return 0, err
+	}
+	if len(ret) < 8 {
+		return 0, errors.New("no data")
+	}
+	value := binary.LittleEndian.Uint64(ret)
+	return math.Float64frombits(value), nil
+}
+
 func ConvertArg_Qna_3E(address string) MitsubishiMCAddress {
 	address = strings.ToUpper(address)
 	r := []rune(address)
@@ -593,3 +618,59 @@ func ConvertArg_A_1E(address string) MitsubishiMCAddress {
 	}
 	return addressInfo
 }
+
+/*
+   /// <summary>
+   /// 读取Float
+   /// </summary>
+   /// <param name="address">地址</param>
+   /// <returns></returns>
+   public Result<float> ReadFloat(string address)
+   {
+       var readResut = Read(address, 4);
+       var result = new Result<float>(readResut);
+       if (result.IsSucceed)
+           result.Value = BitConverter.ToSingle(readResut.Value, 0);
+       return result.EndTime();
+   }
+
+   public Result<float> ReadFloat(int beginAddressInt, int addressInt, byte[] values)
+   {
+       //if (!int.TryParse(address?.Trim(), out int addressInt) || !int.TryParse(beginAddress?.Trim(), out int beginAddressInt))
+       //    throw new Exception($"只能是数字，参数address：{address}  beginAddress：{beginAddress}");
+       try
+       {
+           var interval = (addressInt - beginAddressInt) / 2;
+           var offset = (addressInt - beginAddressInt) % 2 * 2;//取余 乘以2（每个地址16位，占两个字节）
+           var byteArry = values.Skip(interval * 2 * 2 + offset).Take(2 * 2).ToArray();//.ByteFormatting(format);
+           return new Result<float>
+           {
+               Value = BitConverter.ToSingle(byteArry, 0)
+           };
+       }
+       catch (Exception ex)
+       {
+           return new Result<float>
+           {
+               IsSucceed = false,
+               Err = ex.Message
+           };
+       }
+   }
+
+   /// <summary>
+   /// 读取Double
+   /// </summary>
+   /// <param name="address">地址</param>
+   /// <returns></returns>
+   public Result<double> ReadDouble(string address)
+   {
+       var readResut = Read(address, 8);
+       var result = new Result<double>(readResut);
+       if (result.IsSucceed)
+           result.Value = BitConverter.ToDouble(readResut.Value, 0);
+       return result.EndTime();
+   }
+   #endregion
+
+*/
