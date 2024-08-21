@@ -64,74 +64,47 @@ func (client *MitsubishiClient) Connected() bool {
 	return client.conn != nil
 }
 
-func (client *MitsubishiClient) SendPackageSingle(command []byte) ([]byte, error) {
+func (client *MitsubishiClient) SendPackageSingle(command []byte, receiveCount int) ([]byte, error) {
 	if !client.Connected() {
 		return nil, errors.New("not connected")
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
-
-	fmt.Printf("Sending command :%02x  \n", command)
+	fmt.Printf("Sending command :%02X  \n", command)
 	_, err := client.conn.Write(command)
 	if err != nil {
 		return nil, err
 	}
-	headPackage := make([]byte, 1024)
-	n, err := client.conn.Read(headPackage)
-	fmt.Println("Reading head package len ", n)
+	buff := make([]byte, 1024)
+	n, err := client.conn.Read(buff)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Reading head package %2x \n", headPackage[:n])
-	dataPackage := make([]byte, n)
-
-	return append(headPackage[:n], dataPackage...), nil
+	fmt.Printf("Receive data package len:%d data: %2X \n", n, buff[:n])
+	return buff[:n], nil
 }
 
 func (client *MitsubishiClient) SendPackageReliable(command []byte) ([]byte, error) {
 	if !client.Connected() {
-		return nil, errors.New("not connected")
+		client.Connect()
+		if !client.Connected() {
+			return nil, errors.New("not connected")
+		}
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
-
+	fmt.Printf("Sending command :%02X  \n", command)
 	_, err := client.conn.Write(command)
 	if err != nil {
 		return nil, err
 	}
-
-	headPackage := make([]byte, 9)
-	_, err = client.conn.Read(headPackage)
+	buff := make([]byte, 1024)
+	n, err := client.conn.Read(buff)
 	if err != nil {
 		return nil, err
 	}
-
-	contentLength := int(binary.BigEndian.Uint16(headPackage[7:9]))
-	dataPackage := make([]byte, contentLength)
-	_, err = client.conn.Read(dataPackage)
-	if err != nil {
-		// Retry once
-		client.Connect()
-		_, err = client.conn.Write(command)
-		if err != nil {
-			return nil, err
-		}
-
-		_, err = client.conn.Read(headPackage)
-		if err != nil {
-			return nil, err
-		}
-
-		contentLength := int(binary.BigEndian.Uint16(headPackage[7:9]))
-		dataPackage := make([]byte, contentLength)
-		_, err = client.conn.Read(dataPackage)
-		if err != nil {
-			return nil, err
-		}
-
-		return append(headPackage, dataPackage...), nil
-	}
-	return append(headPackage, dataPackage...), nil
+	fmt.Printf("Receive data package len:%d data: %2X \n", n, buff[:n])
+	return buff[:n], nil
 }
 
 func (client *MitsubishiClient) Close() error {
@@ -143,31 +116,42 @@ func (client *MitsubishiClient) Close() error {
 
 func (client *MitsubishiClient) Read(address string, length uint16, isBit bool) ([]byte, error) {
 	var command []byte
+	var retlength float64
+	responseValue := make([]byte, 0)
 	switch client.version {
 	case A_1E:
 		plcAddress := ConvertArg_A_1E(address)
 		command = GetReadCommand_A_1E(plcAddress, length, isBit)
+		retlength = float64(command[10]) + float64(command[11])*256
+		if isBit {
+			retlength = math.Ceil(float64(length)*0.5) + 2
+		} else {
+			retlength = float64(length)*2 + 2
+		}
+		result, err := client.SendPackageSingle(command, int(retlength))
+		if err != nil {
+			return nil, err
+		}
+		responseValue = result[2:]
+		// PrintBuff("ret value :", responseValue)
+		return responseValue, nil
 	case Qna_3E:
 		plcAddress := ConvertArg_Qna_3E(address)
 		command = GetReadCommand_Qna_3E(plcAddress, length, isBit)
+		result, err := client.SendPackageReliable(command)
+		if err != nil {
+			return nil, err
+		}
+		bufferLength := length
+		if isBit {
+			bufferLength = uint16(math.Ceil(float64(bufferLength) * 0.5))
+		}
+		responseValue = result[len(result)-int(length):]
+		// PrintBuff("ret value", responseValue)
+		return responseValue, nil
 	default:
 		return nil, errors.New("unknown version")
 	}
-	responseValue := make([]byte, 0)
-	result, err := client.SendPackageSingle(command)
-	if err != nil {
-		return nil, err
-	}
-	switch client.version {
-	case A_1E:
-		responseValue = result[2:]
-	case Qna_3E:
-		if isBit {
-			length = (length + 1) / 2
-		}
-		responseValue = result[len(result)-int(length):]
-	}
-	return responseValue, nil
 }
 
 func (client *MitsubishiClient) Write(address string, data []byte, isBit bool) ([]byte, error) {
@@ -185,8 +169,11 @@ func (client *MitsubishiClient) Write(address string, data []byte, isBit bool) (
 }
 
 func GetReadCommand_Qna_3E(address MitsubishiMCAddress, length uint16, isBit bool) []byte {
+	if !isBit {
+		length = length / 2
+	}
 	addSlice := make([]byte, 8)
-	binary.BigEndian.PutUint64(addSlice, uint64(address.BeginAddress))
+	binary.LittleEndian.PutUint64(addSlice, uint64(address.BeginAddress))
 	ret := make([]byte, 21)
 	ret[0] = 0x50
 	ret[1] = 0x00
@@ -210,7 +197,7 @@ func GetReadCommand_Qna_3E(address MitsubishiMCAddress, length uint16, isBit boo
 	ret[15] = addSlice[0]
 	ret[16] = addSlice[1]
 	ret[17] = addSlice[2]
-	ret[18] = 0x00
+	ret[18] = address.TypeCode[0]
 	ret[19] = byte(length % 256)
 	ret[20] = byte(length / 256)
 	return ret
@@ -619,58 +606,10 @@ func ConvertArg_A_1E(address string) MitsubishiMCAddress {
 	return addressInfo
 }
 
-/*
-   /// <summary>
-   /// 读取Float
-   /// </summary>
-   /// <param name="address">地址</param>
-   /// <returns></returns>
-   public Result<float> ReadFloat(string address)
-   {
-       var readResut = Read(address, 4);
-       var result = new Result<float>(readResut);
-       if (result.IsSucceed)
-           result.Value = BitConverter.ToSingle(readResut.Value, 0);
-       return result.EndTime();
-   }
-
-   public Result<float> ReadFloat(int beginAddressInt, int addressInt, byte[] values)
-   {
-       //if (!int.TryParse(address?.Trim(), out int addressInt) || !int.TryParse(beginAddress?.Trim(), out int beginAddressInt))
-       //    throw new Exception($"只能是数字，参数address：{address}  beginAddress：{beginAddress}");
-       try
-       {
-           var interval = (addressInt - beginAddressInt) / 2;
-           var offset = (addressInt - beginAddressInt) % 2 * 2;//取余 乘以2（每个地址16位，占两个字节）
-           var byteArry = values.Skip(interval * 2 * 2 + offset).Take(2 * 2).ToArray();//.ByteFormatting(format);
-           return new Result<float>
-           {
-               Value = BitConverter.ToSingle(byteArry, 0)
-           };
-       }
-       catch (Exception ex)
-       {
-           return new Result<float>
-           {
-               IsSucceed = false,
-               Err = ex.Message
-           };
-       }
-   }
-
-   /// <summary>
-   /// 读取Double
-   /// </summary>
-   /// <param name="address">地址</param>
-   /// <returns></returns>
-   public Result<double> ReadDouble(string address)
-   {
-       var readResut = Read(address, 8);
-       var result = new Result<double>(readResut);
-       if (result.IsSucceed)
-           result.Value = BitConverter.ToDouble(readResut.Value, 0);
-       return result.EndTime();
-   }
-   #endregion
-
-*/
+func PrintBuff(str string, buff []byte) {
+	fmt.Printf("%s:", str)
+	for _, v := range buff {
+		fmt.Printf(" %2X", v)
+	}
+	fmt.Println()
+}
