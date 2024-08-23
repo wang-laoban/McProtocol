@@ -27,7 +27,7 @@ type MitsubishiClient struct {
 	address string
 	port    int
 	timeout time.Duration
-	conn    net.Conn
+	Conn    net.Conn
 }
 type MitsubishiMCAddress struct {
 	TypeCode     []byte
@@ -47,8 +47,8 @@ func NewMitsubishiClient(version MitsubishiVersion, ip string, port int, timeout
 }
 
 func (client *MitsubishiClient) Connect() error {
-	if client.conn != nil {
-		client.conn.Close()
+	if client.Conn != nil {
+		client.Conn.Close()
 	}
 	address := net.JoinHostPort(client.address, strconv.Itoa(client.port))
 	fmt.Println("Connecting to", address)
@@ -56,27 +56,32 @@ func (client *MitsubishiClient) Connect() error {
 	if err != nil {
 		return err
 	}
-	client.conn = conn
+	client.Conn = conn
 	return nil
 }
 
 func (client *MitsubishiClient) Connected() bool {
-	return client.conn != nil
+	return client.Conn != nil
 }
 
 func (client *MitsubishiClient) SendPackageSingle(command []byte, receiveCount int) ([]byte, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if !client.Connected() {
-		return nil, errors.New("not connected")
+		client.ReConnect()
+		if !client.Connected() {
+			client.ReConnect()
+			return nil, errors.New("not connected")
+		}
 	}
 	fmt.Printf("Sending command :%02X  \n", command)
-	_, err := client.conn.Write(command)
+	_, err := client.Conn.Write(command)
 	if err != nil {
+		client.ReConnect()
 		return nil, err
 	}
 	buff := make([]byte, 1024)
-	n, err := client.conn.Read(buff)
+	n, err := client.Conn.Read(buff)
 	if err != nil {
 		return nil, err
 	}
@@ -87,19 +92,22 @@ func (client *MitsubishiClient) SendPackageSingle(command []byte, receiveCount i
 func (client *MitsubishiClient) SendPackageReliable(command []byte) ([]byte, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
+	fmt.Println("connected:", client.Connected())
 	if !client.Connected() {
-		client.Connect()
+		client.ReConnect()
 		if !client.Connected() {
+			client.ReConnect()
 			return nil, errors.New("not connected")
 		}
 	}
 	fmt.Printf("Sending command :%02X  \n", command)
-	_, err := client.conn.Write(command)
+	_, err := client.Conn.Write(command)
 	if err != nil {
+		client.ReConnect()
 		return nil, err
 	}
 	buff := make([]byte, 1024)
-	n, err := client.conn.Read(buff)
+	n, err := client.Conn.Read(buff)
 	if err != nil {
 		return nil, err
 	}
@@ -108,10 +116,17 @@ func (client *MitsubishiClient) SendPackageReliable(command []byte) ([]byte, err
 }
 
 func (client *MitsubishiClient) Close() error {
-	if client.conn != nil {
-		return client.conn.Close()
+	defer func() {
+		client.Conn = nil
+	}()
+	if client.Conn != nil {
+		return client.Conn.Close()
 	}
 	return nil
+}
+func (client *MitsubishiClient) ReConnect() {
+	client.Close()
+	client.Connect()
 }
 
 func (client *MitsubishiClient) Read(address string, length uint16, isBit bool) ([]byte, error) {
